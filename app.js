@@ -41,6 +41,7 @@
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   renderer.outputEncoding = THREE.sRGBEncoding;
+  renderer.localClippingEnabled = true;
 
   const scene = new THREE.Scene();
   const camera = new THREE.PerspectiveCamera(32, 1, 0.1, 400);
@@ -743,7 +744,7 @@
       puddle.rotation.x = -Math.PI / 2; puddle.position.set(1.2, e.y1 + 0.02, -2.2); puddle.userData.puddle = true; addObj(puddle);
       for (let i = 0; i < 14; i++) { const d = new THREE.Mesh(new THREE.SphereGeometry(0.05, 6, 4), new THREE.MeshBasicMaterial({ color: 0x5b8ff0 })); d.position.set(1.2 + (Math.random() - 0.5) * 1.6, e.y0 - Math.random() * 3, -2.2 + (Math.random() - 0.5) * 1.4); d.userData.drip = e.y0; d.userData.puddle = true; addObj(d); }
     }
-    renderDamage();
+    addMarker(); renderDamage();
   }
 
   // alarm wave: breadth-first over the nervous links, starting at the damaged element's chip
@@ -833,7 +834,7 @@
   }
 
   function resetDamage(silent) {
-    DMG.objs.forEach(o => scene.remove(o)); DMG.objs = []; DMG.pulses = [];
+    DMG.objs.forEach(o => scene.remove(o)); DMG.objs = []; DMG.pulses = []; DMG.focus = null;
     elements.forEach(e => { delete e.failed; delete e.cap; delete e.liveF; e.mesh.visible = e.pf > 0; });
     if (DMG.e) { DMG.e.chip.mesh.material = chipMat; DMG.e.chip.mesh.scale.setScalar(1); }
     elements.forEach(e => { delete e.rebuild; delete e.rebuilding; });
@@ -844,6 +845,7 @@
   }
 
   function renderDamage() {
+    renderPhases();
     const box = document.getElementById("dmg-log"); if (!box) return;
     box.innerHTML = DMG.log.map(t => `<li>${t}</li>`).join("");
     const tb = document.getElementById("dmg-table");
@@ -892,7 +894,7 @@
   function startRepair(ci) {
     if (DMG.rec || !DMG.done) return;
     const s = SCEN[DMG.key], e = DMG.e, p = damagePoint(), o = repairOptions()[ci];
-    DMG.rec = { ci, phase: 0, t: 0 };
+    DMG.rec = { ci, phase: 0, t: 0 }; addRoute(ci);
     document.getElementById("net-repair").checked = true; layersChanged();
     logStep(`<b>Recovery</b>: centre c${ci + 1} selected (cost J ${o.J}: ${o.dist.toFixed(1)} m away, ${o.climb.toFixed(1)} m up). Robot c${ci + 1} drives to the damage; repair material flows from the tanks through the red network and the hose.`);
     const stand = { x: p.x + (p.x < CENTRES[ci].x ? 1.3 : -1.3), z: p.z + (p.z > 0 ? -1.3 : 1.3) };
@@ -916,7 +918,7 @@
         : s.kind === "fire" ? `<b>Re-formation</b>: the overheated cover of ${e.name} is removed and re-formed with new material.`
         : `<b>Re-formation</b>: the slab is dried; the corroded zone is opened and re-formed; the water branch is repaired.`);
     } else if (R.phase === 1) {
-      const k = Math.min(1, R.t / 5);
+      const k = Math.min(1, R.t / 5); R.k = k;
       if (s.kind === "fail") {
         e.rebuild = 0.3 + 0.7 * k;
         if (goal) goal.head.set(e.cx + Math.sin(R.t * 6) * 0.15, e.y0 + e.h * e.rebuild + 0.3, e.cz);
@@ -943,6 +945,200 @@
         DMG.finished = true; renderDamage();
       }
     }
+  }
+
+  // ================= ARCHITECTURAL PROJECT OVERLAY (v0.6) =================
+  // A real project (glTF/GLB or OBJ) is laid over the scheme and fitted to it.
+  // Affine fit = separate scale factors for x, y, z (straight lines and parallels stay); proportional fit = one factor.
+  const PRJ = { root: null, rot: null, model: null, name: "", ref: null, groundY: null, turn: 0, mode: "affine", opacity: 1, visible: true, source: "", H: 1e6,
+    clipBelow: new THREE.Plane(new THREE.Vector3(0, -1, 0), 1e6), clipAbove: new THREE.Plane(new THREE.Vector3(0, 1, 0), -1e6) };
+  const ghostMat = new THREE.LineBasicMaterial({ color: 0x6b7a80, transparent: true, opacity: 0.35, depthWrite: false, clippingPlanes: [PRJ.clipAbove] });
+  const TARGET = { x: 10.0, z: 8.0, y0: 0.5, h: 6.8 }; // the scheme: columns from x −5…5, z −4…4, from the foundation top to the roof top
+  function b64ToBuf(b64) { const s = atob(b64); const u = new Uint8Array(s.length); for (let i = 0; i < s.length; i++) u[i] = s.charCodeAt(i); return u.buffer; }
+
+  function removeProject() {
+    if (PRJ.root) scene.remove(PRJ.root);
+    PRJ.root = PRJ.rot = PRJ.model = null; PRJ.name = ""; PRJ.source = "";
+    renderProject();
+  }
+
+  function useModel(obj, name, source, groundY) {
+    removeProject();
+    PRJ.model = obj; PRJ.name = name; PRJ.source = source || ""; PRJ.groundY = groundY;
+    PRJ.rot = new THREE.Group(); PRJ.rot.add(obj);
+    PRJ.root = new THREE.Group(); PRJ.root.add(PRJ.rot); scene.add(PRJ.root);
+    obj.traverse(o => {
+      if (!o.isMesh) return;
+      o.castShadow = true; o.receiveShadow = true;
+      const mats = Array.isArray(o.material) ? o.material : [o.material];
+      mats.forEach(m => { m.userData.baseOpacity = m.opacity === undefined ? 1 : m.opacity; m.side = THREE.DoubleSide; m.clippingPlanes = [PRJ.clipBelow]; });
+    });
+    // outline of the whole project: shown above the current formation height as the "target" the body grows into
+    const meshes = []; obj.traverse(o => { if (o.isMesh) meshes.push(o); });
+    meshes.forEach(o => { const g = new THREE.LineSegments(new THREE.EdgesGeometry(o.geometry, 25), ghostMat); g.userData.ghost = true; o.add(g); });
+    // reference = walls if the file has them (by node name), otherwise the whole model
+    const walls = []; obj.traverse(o => { if (o.isMesh && /wall/i.test(o.name || (o.parent && o.parent.name) || "")) walls.push(o); });
+    PRJ.refObjs = walls.length ? walls : [obj];
+    const b = refBox(); PRJ.turn = (b.max.z - b.min.z) > (b.max.x - b.min.x) ? 1 : 0; // long side along x like the scheme
+    fitProject(); updateProjectClip();
+  }
+
+  function refBox() {
+    PRJ.root && PRJ.root.updateMatrixWorld(true);
+    const inv = new THREE.Matrix4().copy(PRJ.root ? PRJ.root.matrixWorld : new THREE.Matrix4()).invert();
+    const box = new THREE.Box3();
+    PRJ.refObjs.forEach(o => { o.updateMatrixWorld(true); const bb = new THREE.Box3().setFromObject(o); box.union(bb); });
+    return box.applyMatrix4(inv); // in root-local space (after rotation, before scale/position)
+  }
+
+  function fitProject() {
+    if (!PRJ.root) return;
+    PRJ.rot.rotation.y = PRJ.turn * Math.PI / 2;
+    PRJ.root.scale.set(1, 1, 1); PRJ.root.position.set(0, 0, 0);
+    const b = refBox();
+    const gy = PRJ.groundY === null || PRJ.groundY === undefined ? b.min.y : PRJ.groundY;
+    const sx0 = b.max.x - b.min.x, sz0 = b.max.z - b.min.z, sy0 = Math.max(0.1, b.max.y - gy);
+    let k;
+    if (PRJ.mode === "affine") k = { x: TARGET.x / sx0, y: TARGET.h / sy0, z: TARGET.z / sz0 };
+    else { const s = Math.min(TARGET.x / sx0, TARGET.z / sz0); k = { x: s, y: s, z: s }; }
+    PRJ.k = k; PRJ.size = { x: sx0, y: sy0, z: sz0 };
+    PRJ.root.scale.set(k.x, k.y, k.z);
+    const cx = (b.min.x + b.max.x) / 2, cz = (b.min.z + b.max.z) / 2;
+    PRJ.root.position.set(-cx * k.x, TARGET.y0 - gy * k.y, -cz * k.z);
+    applyProjectLook(); renderProject();
+  }
+
+  // the project is shown up to the current height of the forming body; above it only its outline
+  function updateProjectClip() {
+    if (!PRJ.root) return;
+    let H = 0; elements.forEach(e => { if (e.pf > 0) H = Math.max(H, e.y0 + e.h * e.pf); });
+    if (T >= T_MAX - 0.001) H = 1e6;
+    PRJ.H = H; PRJ.clipBelow.constant = H; PRJ.clipAbove.constant = -H;
+    const lbl = document.getElementById("prj-grow");
+    if (lbl) lbl.textContent = H >= 1e6 ? "Project complete: the body has reached the full height of the project." : `Grows with construction: real project shown up to ${H.toFixed(1)} m (current formation height); above it, its outline.`;
+  }
+
+  function applyProjectLook() {
+    if (!PRJ.root) return;
+    PRJ.root.visible = PRJ.visible;
+    PRJ.root.traverse(o => {
+      if (!o.isMesh) return;
+      (Array.isArray(o.material) ? o.material : [o.material]).forEach(m => {
+        const op = Math.min(m.userData.baseOpacity, PRJ.opacity);
+        m.transparent = op < 1; m.opacity = op; m.depthWrite = op >= 1; m.needsUpdate = true;
+      });
+    });
+  }
+
+  function renderProject() {
+    const info = document.getElementById("prj-info"); if (!info) return;
+    const on = !!PRJ.root;
+    document.querySelectorAll(".prj-on").forEach(x => { x.disabled = !on; });
+    if (!on) { info.innerHTML = "No project loaded. The scheme is a relational model: it can be fitted to any real project."; return; }
+    const f = v => v.toFixed(2);
+    info.innerHTML = `<b>${PRJ.name}</b><br>Project size (reference${PRJ.refObjs.length > 1 || PRJ.refObjs[0] !== PRJ.model ? ": walls" : ""}): ${PRJ.size.x.toFixed(1)} × ${PRJ.size.z.toFixed(1)} m, height ${PRJ.size.y.toFixed(1)} m<br>` +
+      `${PRJ.mode === "affine" ? "Affine fit" : "Proportional fit"}: x × ${f(PRJ.k.x)} · y × ${f(PRJ.k.y)} · z × ${f(PRJ.k.z)} · turned ${PRJ.turn * 90}°` +
+      `<br><span id="prj-grow"></span>` + (PRJ.source ? `<br><span class="src">${PRJ.source}</span>` : "");
+    document.getElementById("prj-mode").textContent = PRJ.mode === "affine" ? "Fit: affine" : "Fit: proportional";
+    document.getElementById("prj-show").textContent = PRJ.visible ? "Hide" : "Show";
+    updateProjectClip();
+  }
+
+  function loadSample() {
+    const b64 = window.SAMPLE_PROJECTS && window.SAMPLE_PROJECTS.duplex;
+    if (!b64) { document.getElementById("prj-info").textContent = "Sample file projects/duplex.glb.js is missing."; return; }
+    new THREE.GLTFLoader().parse(b64ToBuf(b64), "", g => useModel(g.scene, "Duplex Apartment · Revit 2011, two storeys",
+      'Source: BSI (2020) "Duplex Apartment Test Files", buildingSMART International · <a href="https://github.com/buildingsmart-community/Community-Sample-Test-Files" target="_blank" rel="noopener noreferrer">GitHub ↗</a> · CC BY 4.0 · converted from IFC, furniture removed (see projects/ATTRIBUTION.md)', 0),
+      err => { document.getElementById("prj-info").textContent = "Could not read the sample: " + err; });
+  }
+
+  function loadFile(file) {
+    const name = file.name, ext = name.split(".").pop().toLowerCase();
+    const rd = new FileReader();
+    rd.onerror = () => { document.getElementById("prj-info").textContent = "Could not read the file."; };
+    if (ext === "obj") {
+      rd.onload = () => { const o = new THREE.OBJLoader().parse(rd.result); o.traverse(m => { if (m.isMesh) m.material = new THREE.MeshStandardMaterial({ color: 0xd9d4c8, roughness: 0.85 }); }); useModel(o, name + " · OBJ", "Your file", null); };
+      rd.readAsText(file);
+    } else if (ext === "glb" || ext === "gltf") {
+      rd.onload = () => new THREE.GLTFLoader().parse(rd.result, "", g => useModel(g.scene, name + " · glTF", "Your file", null),
+        err => { document.getElementById("prj-info").textContent = "Could not read the file (a .gltf with separate .bin/texture files will not work; export as .glb): " + err; });
+      rd.readAsArrayBuffer(file);
+    } else document.getElementById("prj-info").textContent = "Use a .glb, .gltf or .obj file (export from Revit, ArchiCAD, SketchUp, Blender…).";
+  }
+
+  // ================= DAMAGE CLARITY: phases, 3D label, marker, route, camera (v0.7) =================
+  const PHASES = ["Event", "Detection", "Redistribution", "Response", "Repair", "Restored"];
+  const KIND_WORD = { fail: "destroyed", crack: "cracked", fire: "overheated", leak: "leaking" };
+  function phaseIndex() { if (DMG.finished) return 5; if (DMG.rec) return 4; return DMG.phase; }
+  function renderPhases() {
+    const ol = document.getElementById("phases"); if (!ol) return;
+    const k = DMG.key ? phaseIndex() : -1;
+    ol.innerHTML = PHASES.map((p, i) => `<li class="${i < k || (k === 5 && i === 5) ? "done" : i === k ? "now" : ""}">${i < k || (k === 5 && i === 5) ? "✓ " : ""}${p}</li>`).join("");
+  }
+  function addMarker() {
+    const p = damagePoint();
+    const ring = new THREE.Mesh(new THREE.TorusGeometry(0.95, 0.07, 10, 48), new THREE.MeshBasicMaterial({ color: 0xff2d55, depthTest: false, transparent: true }));
+    ring.rotation.x = Math.PI / 2; ring.position.set(p.x, p.y + 0.05, p.z); ring.renderOrder = 25; ring.userData.marker = true; addObj(ring);
+    const pin = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 1.1, 8), ring.material);
+    pin.position.set(p.x, p.y + 0.6, p.z); pin.renderOrder = 25; pin.userData.marker = true; addObj(pin);
+    DMG.focus = new THREE.Vector3(p.x, p.y + 1, p.z);
+  }
+  function addRoute(ci) {
+    const c = CENTRES[ci], p = damagePoint();
+    const pts = [V(c.x, 0.6, c.z), V((c.x + p.x) / 2, Math.max(0.6, p.y) + 1.2, (c.z + p.z) / 2), V(p.x, p.y + 0.2, p.z)];
+    const curve = new THREE.QuadraticBezierCurve3(pts[0], pts[1], pts[2]);
+    const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints(curve.getPoints(40)), new THREE.LineDashedMaterial({ color: 0x1f8a5b, dashSize: 0.25, gapSize: 0.15, depthTest: false, transparent: true }));
+    line.computeLineDistances(); line.renderOrder = 25; line.userData.route = true; addObj(line);
+  }
+  function labelText() {
+    const s = SCEN[DMG.key], e = DMG.e, R = DMG.rec;
+    if (DMG.finished) return ["✓ " + e.name + " restored", "ok"];
+    if (R) {
+      if (R.phase === 0) return [`Robot c${R.ci + 1} on the way to ${e.name}`, "ok"];
+      if (R.phase === 1) return [`Re-forming ${e.name}: ${Math.round((R.k || 0) * 100)} %`, "ok"];
+      return ["Removing the temporary prop", "ok"];
+    }
+    if (DMG.phase === 0) return [`⚠ ${e.name} ${KIND_WORD[s.kind]}`, "bad"];
+    if (DMG.phase === 1) return [`⚠ ${e.name}: alarm on the nervous network`, "bad"];
+    if (DMG.phase === 2) {
+      const worst = DMG.snap.after ? [...DMG.snap.after].sort((a, b) => b[1] - a[1])[0] : null;
+      return [`⚠ Loads moved · ${worst ? worst[0] + " " + Math.round(worst[1] * 100) + " %" : ""}`, "bad"];
+    }
+    return [DMG.done ? `⚠ ${e.name}: secured, waiting for repair` : `⚠ ${e.name}: prop and zone being set`, "warn"];
+  }
+  function updateDamageView() {
+    const lab = document.getElementById("dmg-label");
+    if (!DMG.e || MODE !== "dmg") { lab.hidden = true; return; }
+    const p = damagePoint(); const v = new THREE.Vector3(p.x, p.y + 1.4, p.z).project(camera);
+    const r = canvas.getBoundingClientRect();
+    const [txt, cls] = labelText();
+    lab.hidden = v.z > 1; lab.className = "dmg-label " + cls; lab.textContent = txt;
+    lab.style.left = (r.left + (v.x + 1) / 2 * r.width) + "px"; lab.style.top = (r.top + (1 - v.y) / 2 * r.height) + "px";
+    const green = DMG.rec || DMG.finished;
+    DMG.objs.forEach(o => { if (o.userData.marker) { o.material.color.setHex(green ? 0x1f8a5b : 0xff2d55); if (o.geometry.type === "TorusGeometry") o.scale.setScalar(1 + 0.15 * Math.sin(performance.now() / 200)); } });
+    if (DMG.focus && !drag) {
+      target.lerp(DMG.focus, 0.05); orbit.radius += (26 - orbit.radius) * 0.05; placeCamera();
+      if (target.distanceTo(DMG.focus) < 0.03 && Math.abs(orbit.radius - 26) < 0.1) DMG.focus = null;
+    }
+  }
+
+  // ================= MODES (v0.7) =================
+  let MODE = "build";
+  const HINT = {
+    build: "Watch the body form from the centres: drag the time slider or press Play. You can lay a real architectural project over the scheme.",
+    mon: "The finished building in use: its nervous system (control), utility networks and stress map. Use the integrity sensors to find the risk points.",
+    dmg: "Break one part and follow the building's response: where it broke, how the loads move, how it is secured, repaired, and what it learns."
+  };
+  function setMode(m) {
+    if (MODE === "dmg" && m !== "dmg") resetDamage(false);
+    MODE = m; stop();
+    document.querySelectorAll("[data-mode]").forEach(b => b.setAttribute("aria-selected", String(b.dataset.mode === m)));
+    document.querySelectorAll("[data-m]").forEach(el => el.classList.toggle("mode-off", !el.dataset.m.split(" ").includes(m)));
+    document.getElementById("mode-hint").textContent = HINT[m];
+    if (m === "build") { document.getElementById("lay-stress").checked = false; clearCrawlers(); layersChanged(); }
+    else setT(T_MAX);
+    if (m === "dmg") { document.getElementById("lay-stress").checked = true; layersChanged(); }
+    renderPhases();
   }
 
   // ---------------- time evaluation ----------------
@@ -1034,6 +1230,7 @@
     }
     updateNetworks(T);
     updateStress();
+    updateProjectClip();
   }
 
   // ---------------- camera orbit (drag / wheel / right-drag pan) ----------------
@@ -1115,6 +1312,14 @@
   const xrayBox = document.getElementById("lay-xray");
   function layersChanged() { NET.nervous = document.getElementById("lay-nerv").checked; STR.on = document.getElementById("lay-stress").checked; Object.keys(NETS).forEach(k => { NETS[k].on = document.getElementById("net-" + k).checked; }); NET.xray = xrayBox.checked; setXray(NET.xray); update(T, false); }
   document.getElementById("lay-stress").addEventListener("change", layersChanged);
+  document.getElementById("prj-sample").addEventListener("click", loadSample);
+  document.getElementById("prj-file").addEventListener("change", ev => { const f = ev.target.files[0]; if (f) loadFile(f); ev.target.value = ""; });
+  document.getElementById("prj-mode").addEventListener("click", () => { PRJ.mode = PRJ.mode === "affine" ? "proportional" : "affine"; fitProject(); });
+  document.getElementById("prj-turn").addEventListener("click", () => { PRJ.turn = (PRJ.turn + 1) % 4; fitProject(); });
+  document.getElementById("prj-show").addEventListener("click", () => { PRJ.visible = !PRJ.visible; applyProjectLook(); renderProject(); });
+  document.getElementById("prj-remove").addEventListener("click", removeProject);
+  document.getElementById("prj-opacity").addEventListener("input", ev => { PRJ.opacity = +ev.target.value / 100; applyProjectLook(); });
+  renderProject();
   document.querySelectorAll("[data-dmg]").forEach(b => b.addEventListener("click", () => startDamage(b.dataset.dmg)));
   document.getElementById("btn-dmg-reset").addEventListener("click", () => resetDamage(false));
   document.getElementById("btn-mobile").addEventListener("click", () => { stop(); deployMobile(); });
@@ -1141,14 +1346,16 @@
       if (T >= T_MAX) stop();
     }
     animateNetworks(now);
+    updateDamageView();
     renderer.render(scene, camera);
     requestAnimationFrame(loop);
   }
 
+  document.querySelectorAll("[data-mode]").forEach(b => b.addEventListener("click", () => setMode(b.dataset.mode)));
   resize(); placeCamera(); setT(0);
   // read the real checkbox state at start (browsers may restore it on reload)
-  showRebar = document.getElementById("rebar").checked; layersChanged();
+  showRebar = document.getElementById("rebar").checked; layersChanged(); setMode("build");
   // expose for testing
-  window.__lba = { setT, startDamage, startRepair };
+  window.__lba = { setT, startDamage, startRepair, loadSample, PRJ };
   requestAnimationFrame(loop);
 })();

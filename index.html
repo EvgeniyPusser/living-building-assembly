@@ -5,41 +5,47 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Living Building Assembly</title>
 <meta name="description" content="Interactive 3D model of how a Living Building forms on site: material substrate, robotic reinforcement and layer-by-layer formation." />
-<link rel="stylesheet" href="./style.css?v=0.5d" />
+<link rel="stylesheet" href="./style.css?v=0.7a" />
 </head>
 <body>
   <canvas id="scene" aria-label="3D model of the building being formed"></canvas>
 
   <header class="top">
     <div>
-      <p class="eyebrow">Living Things · v0.5-D</p>
+      <p class="eyebrow">Living Things · v0.7</p>
       <h1>Living Building Assembly</h1>
     </div>
     <p class="hint">Drag to rotate · scroll to zoom · right-drag to pan</p>
   </header>
 
   <aside class="panel">
-    <ol class="stages" id="stages"></ol>
-    <div class="info">
+    <div class="modes" role="tablist" aria-label="Mode">
+      <button data-mode="build" aria-selected="true">1 · Construction</button>
+      <button data-mode="mon" aria-selected="false">2 · Monitoring</button>
+      <button data-mode="dmg" aria-selected="false">3 · Damage &amp; repair</button>
+    </div>
+    <p class="mode-hint" id="mode-hint"></p>
+    <ol class="stages" id="stages" data-m="build"></ol>
+    <div class="info" data-m="build">
       <p class="eyebrow" id="st-num"></p>
       <h2 id="st-title"></h2>
       <p id="st-text"></p>
       <div class="refs" id="st-refs"></div>
     </div>
     <div class="controls">
-      <input type="range" id="time" min="0" max="7000" value="0" autocomplete="off" aria-label="Formation time" />
-      <div class="row">
+      <input type="range" id="time" min="0" max="7000" value="0" autocomplete="off" aria-label="Formation time" data-m="build" />
+      <div class="row" data-m="build">
         <button id="play">▶ Play</button>
         <label>Speed <select id="speed"><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option></select></label>
       </div>
       <div class="row layers">
         <span>Layers</span>
-        <label><input type="checkbox" id="rebar" checked autocomplete="off" /> Rebar</label>
+        <label data-m="build"><input type="checkbox" id="rebar" checked autocomplete="off" /> Rebar</label>
         <label class="nerv"><input type="checkbox" id="lay-nerv" checked autocomplete="off" /> Nervous (control)</label>
         <label><input type="checkbox" id="lay-xray" autocomplete="off" /> X-ray</label>
-        <label class="stress"><input type="checkbox" id="lay-stress" autocomplete="off" /> Stress</label>
+        <label class="stress" data-m="mon dmg"><input type="checkbox" id="lay-stress" autocomplete="off" /> Stress</label>
       </div>
-      <div class="row layers utilities">
+      <div class="row layers utilities" data-m="mon dmg">
         <span>Utilities</span>
         <label style="color:#2f6fde"><input type="checkbox" id="net-water" autocomplete="off" /> Water</label>
         <label style="color:#b98700"><input type="checkbox" id="net-power" autocomplete="off" /> Power</label>
@@ -47,24 +53,42 @@
         <label style="color:#6b778a"><input type="checkbox" id="net-air" autocomplete="off" /> Air</label>
         <label style="color:#c23b22"><input type="checkbox" id="net-repair" autocomplete="off" /> Repair material</label>
       </div>
-      <p class="clock" id="clock"></p>
+      <p class="clock" id="clock" data-m="build"></p>
     </div>
-    <div class="stress-box" id="stress-box" hidden>
+    <div class="prj-box" data-m="build">
+      <p class="refs-title">Architectural project</p>
+      <div class="row prj-btns">
+        <button id="prj-sample">Load sample: Duplex</button>
+        <label class="filebtn">Load your file<input type="file" id="prj-file" accept=".glb,.gltf,.obj" hidden /></label>
+      </div>
+      <div class="row prj-btns">
+        <button id="prj-mode" class="ghost prj-on">Fit: affine</button>
+        <button id="prj-turn" class="ghost prj-on">Turn 90°</button>
+        <button id="prj-show" class="ghost prj-on">Hide</button>
+        <button id="prj-remove" class="ghost prj-on">Remove</button>
+      </div>
+      <label class="op">Opacity <input type="range" id="prj-opacity" class="prj-on" min="10" max="100" value="100" autocomplete="off" /></label>
+      <p class="small" id="prj-info"></p>
+    </div>
+    <div class="stress-box" id="stress-box" hidden data-m="mon">
       <p class="refs-title">Stress map · integrity sensors</p>
       <div class="scale"><span>0 %</span><i></i><span>100 %+ of capacity</span></div>
       <p class="small">Colour = utilisation, the share of the assumed capacity used (red = 100 % or more). Diamonds = integrity sensors at the critical points of each element; pulsing red = the four riskiest points. Click any element or sensor.</p>
-      <div class="row sensor-btns"><button id="btn-mobile">▶ Deploy mobile sensors</button><button id="btn-rules" class="ghost">Rule-based</button></div>
+      <div class="row sensor-btns" data-m="mon"><button id="btn-mobile">▶ Deploy mobile sensors</button><button id="btn-rules" class="ghost">Rule-based</button></div>
       <p class="small" id="sensor-status"></p>
       <ol class="risk" id="risk-list"></ol>
     </div>
-    <div class="dmg-box">
-      <p class="refs-title">Damage simulation</p>
+    <div class="dmg-box" data-m="dmg">
+      <p class="refs-title">1 · Choose what breaks</p>
       <div class="row dmg-btns">
         <button data-dmg="impact">Impact</button><button data-dmg="crack">Crack</button><button data-dmg="fire">Overheating</button><button data-dmg="leak">Water leak</button><button id="btn-dmg-reset" class="ghost">Reset</button>
       </div>
+      <div class="stress-box"><div class="scale"><span>0 %</span><i></i><span>100 %+ of capacity</span></div></div>
+      <p class="refs-title" style="margin-top:10px">2 · What happens</p>
+      <ol class="phases" id="phases"></ol>
       <ol class="dmg-log" id="dmg-log"></ol>
       <div class="rep-box" id="rep-box" hidden>
-        <p class="refs-title">Recovery</p>
+        <p class="refs-title">3 · Repair from a centre</p>
         <div class="row rep-opts"></div>
       </div>
       <table class="dmg-table" id="dmg-table"></table>
@@ -75,6 +99,8 @@
       <div class="refs" id="all-refs"></div>
     </details>
   </aside>
+
+  <div class="dmg-label" id="dmg-label" hidden></div>
 
   <footer class="legend">
     <span><i style="background:#d8d4cb"></i>Formed concrete</span>
@@ -89,6 +115,9 @@
   </footer>
 
   <script src="./vendor/three.min.js"></script>
-  <script src="./app.js?v=0.5d"></script>
+  <script src="./vendor/GLTFLoader.js"></script>
+  <script src="./vendor/OBJLoader.js"></script>
+  <script src="./projects/duplex.glb.js"></script>
+  <script src="./app.js?v=0.7a"></script>
 </body>
 </html>

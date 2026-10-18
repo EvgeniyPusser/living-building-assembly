@@ -79,3 +79,16 @@ Illustrative model. Geometry and timing are demonstration rules, not a structura
 - The chosen robot drives to the damage; the repair-material network switches on; the element is re-formed layer by layer (destroyed column) or locally re-formed/injected (crack, heat, leak).
 - Then the prop is removed, the zone reopens, neighbours relax, loads are recalculated (table column "After repair"),
   and an **Experience → Cloud DNA** lesson is written for the next generation.
+
+## v0.6: real architectural project over the scheme
+
+- Panel block **Architectural project**: **Load sample: Duplex** (a real two-storey Revit project, see `projects/ATTRIBUTION.md`, CC BY 4.0) or **Load your file** (.glb / .gltf single-file / .obj — export from Revit, ArchiCAD, SketchUp, Blender).
+- The project is fitted to the scheme: **affine fit** scales x, y and z separately (straight lines and parallels are kept), **proportional fit** uses one factor. The factors are shown in the panel. Walls are used as the reference when the file names them.
+- **Turn 90°**, **Hide/Show**, **Remove**, opacity slider (default opaque; switch X-ray or lower the opacity to see the scheme inside).
+- **Grows with construction** (v0.6.1): the project is cut by a horizontal plane at the current formation height of the scheme; above that plane only its outline is shown, as the target the body grows into. The cut is by height only: project walls are not linked one-to-one to scheme elements.
+- The scheme itself is a relational model (what connects to what); fitting it to a project changes geometry, not relations.
+
+## v0.7: modes and a clear damage/repair view
+
+- Three modes at the top of the panel: **1 · Construction** (stages, time, rebar, real project), **2 · Monitoring** (finished building: nervous system, utilities, stress, sensors), **3 · Damage & repair**. Modes 2 and 3 show the finished building; leaving mode 3 resets the damage.
+- Damage & repair: a phase tracker (Event → Detection → Redistribution → Response → Repair → Restored), a label in the 3D view above the damaged part (red while broken, amber while secured, green while repaired), a pulsing ring at the damage, the camera turns to it, and a dashed route from the chosen centre during repair.
