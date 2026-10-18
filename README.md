@@ -60,7 +60,7 @@ Illustrative model. Geometry and timing are demonstration rules, not a structura
 
 ## v0.3-B2: mobile sensors
 
-- In the Stress panel, **Deploy mobile sensors** releases 1–3 sensors per element (columns 1, walls 2, slabs and foundation 4).
+- In the Stress panel, **Deploy mobile sensors** releases 1–4 sensors per element (columns 1, walls 2, slabs and foundation 4).
 - Each sensor does a stochastic hill climb on the element's local stress field: it tries 14 neighbouring points, moves to the highest one, and shrinks its step when no neighbour is higher. Where it stops becomes an integrity sensor; trails show the route.
 - Local stress fields are rules of thumb (columns: base; walls: ends at the base; slabs: mid-span sagging and hogging over loaded supports; foundation: under heavy supports), not FEM.
 - **Rule-based** returns to the fixed sensors of v0.3-B1.
@@ -92,3 +92,11 @@ Illustrative model. Geometry and timing are demonstration rules, not a structura
 
 - Three modes at the top of the panel: **1 · Construction** (stages, time, rebar, real project), **2 · Monitoring** (finished building: nervous system, utilities, stress, sensors), **3 · Damage & repair**. Modes 2 and 3 show the finished building; leaving mode 3 resets the damage.
 - Damage & repair: a phase tracker (Event → Detection → Redistribution → Response → Repair → Restored), a label in the 3D view above the damaged part (red while broken, amber while secured, green while repaired), a pulsing ring at the damage, the camera turns to it, and a dashed route from the chosen centre during repair.
+
+## v0.7b: monitoring correctness and resource cleanup
+
+- X-ray also applies to stress-coloured elements. Selected-element cards refresh with construction, damage and repair; capacity readings include the active damage/adaptation factor.
+- Red sensor alarms require the host element to reach 100% of its assumed capacity. The top-four list is a heuristic ranking; search scores are separate from element utilisation.
+- Tributary cells use their actual area at slab edges, preserving vertical load totals. A restricted zone removes use load only inside the marked rectangle.
+- Slab bending uses an equivalent uniform load including loads from upper elements. This remains illustrative: local bending, punching shear, stiffness and plate behaviour are not resolved.
+- Sensor trails reuse buffers and stop updating when the search finishes. Repeated sensor runs and damage/reset cycles release owned graphics resources while retaining shared materials and geometries.

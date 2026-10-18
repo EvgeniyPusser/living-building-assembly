@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Living Building Assembly</title>
 <meta name="description" content="Interactive 3D model of how a Living Building forms on site: material substrate, robotic reinforcement and layer-by-layer formation." />
-<link rel="stylesheet" href="./style.css?v=0.7a" />
+<link rel="stylesheet" href="./style.css?v=0.7b" />
 </head>
 <body>
   <canvas id="scene" aria-label="3D model of the building being formed"></canvas>
@@ -73,7 +73,7 @@
     <div class="stress-box" id="stress-box" hidden data-m="mon">
       <p class="refs-title">Stress map · integrity sensors</p>
       <div class="scale"><span>0 %</span><i></i><span>100 %+ of capacity</span></div>
-      <p class="small">Colour = utilisation, the share of the assumed capacity used (red = 100 % or more). Diamonds = integrity sensors at the critical points of each element; pulsing red = the four riskiest points. Click any element or sensor.</p>
+      <p class="small">Colour = utilisation, the share of the assumed capacity used (red = 100 % or more). Diamonds = integrity sensors at the critical points of each element; pulsing red = the host element reaches 100 % of its assumed capacity. The list ranks heuristic search scores, not measured local capacity. Click any element or sensor.</p>
       <div class="row sensor-btns" data-m="mon"><button id="btn-mobile">▶ Deploy mobile sensors</button><button id="btn-rules" class="ghost">Rule-based</button></div>
       <p class="small" id="sensor-status"></p>
       <ol class="risk" id="risk-list"></ol>
@@ -118,6 +118,6 @@
   <script src="./vendor/GLTFLoader.js"></script>
   <script src="./vendor/OBJLoader.js"></script>
   <script src="./projects/duplex.glb.js"></script>
-  <script src="./app.js?v=0.7a"></script>
+  <script src="./app.js?v=0.7b"></script>
 </body>
 </html>

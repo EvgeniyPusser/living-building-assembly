@@ -344,8 +344,13 @@
   }
   const anyNet = () => Object.values(NETS).some(n => n.on);
 
+  function applyXray(mat, on) {
+    const changed = mat.transparent !== on;
+    mat.transparent = on; mat.opacity = on ? 0.28 : 1; mat.depthWrite = !on;
+    if (changed) mat.needsUpdate = true;
+  }
   function setXray(on) {
-    [M.concrete, M.front].forEach(mat => { mat.transparent = on; mat.opacity = on ? 0.28 : 1; mat.depthWrite = !on; mat.needsUpdate = true; });
+    [M.concrete, M.front, ...elements.map(e => e.stressMat).filter(Boolean)].forEach(mat => applyXray(mat, on));
   }
 
   function updateNetworks(T) {
@@ -412,7 +417,7 @@
         <dt>Position relative to centre c${ci + 1}</dt><dd>dx ${(e.cx - c.x).toFixed(1)} m · dy ${(e.y0 + e.h / 2).toFixed(1)} m · dz ${(e.cz - c.z).toFixed(1)} m</dd>
         <dt>Signal links (${nb.length})</dt><dd>${nb.join(", ")}</dd>
         <dt>Utility networks through this element</dt><dd>${e.nets ? [...e.nets].map(k => NETS[k].label).join(", ") : "none"}</dd>
-        <dt>Status</dt><dd>${e.pf >= 1 ? "online · formed" : e.pf > 0 ? "online · element being formed" : "online · in reinforcement cage"}</dd>
+        <dt>Status</dt><dd>${e.failed ? "offline · destroyed" : e.rebuilding ? "repair in progress" : e.pf >= 1 ? "online · formed" : e.pf > 0 ? "online · element being formed" : e.pr > 0 ? "online · in reinforcement cage" : "not formed · offline"}</dd>
         ${structuralReading(e)}
       </dl>
       <p class="small">${STR.on ? "Numbers come from a simplified tributary-area model with assumed capacities. Not a structural design." : "Turn on the Stress layer to see structural readings."}</p>`;
@@ -451,7 +456,11 @@
         continue;
       }
       const area = e.w * e.d;
-      r.q = r.own / area + FIN + (LIVE[e.name] || 0) * (e.liveF === undefined ? 1 : e.liveF);
+      const baseQ = r.own / area + FIN;
+      const liveQ = (LIVE[e.name] || 0) * (e.liveF === undefined ? 1 : e.liveF);
+      const zone = e.liveZone;
+      const closedArea = zone ? Math.max(0, Math.min(e.x1, zone.x1) - Math.max(e.x0, zone.x0)) * Math.max(0, Math.min(e.z1, zone.z1) - Math.max(e.z0, zone.z0)) : 0;
+      r.q = baseQ + liveQ * (1 - closedArea / area);
       r.N = r.q * area + r.points.reduce((s, p) => s + p.P, 0);
       if (e.y0 < 0.01) { // foundation on soil
         r.p = r.N / area; r.util = r.p / (SOIL_CAP * (e.cap || 1));
@@ -462,11 +471,14 @@
       const sup = list.filter(v => !v.slab && Math.abs(v.y1 - e.y0) < 0.05 && v.x1 > e.x0 && v.x0 < e.x1 && v.z1 > e.z0 && v.z0 < e.z1);
       if (!sup.length) { r.util = 0; continue; }
       let maxD = 0, mid = { x: e.cx, z: e.cz };
-      const step = 0.25, dA = step * step;
-      for (let x = e.x0 + step / 2; x < e.x1; x += step) for (let z = e.z0 + step / 2; z < e.z1; z += step) {
+      const step = 0.25;
+      for (let x0 = e.x0; x0 < e.x1 - 1e-9; x0 += step) for (let z0 = e.z0; z0 < e.z1 - 1e-9; z0 += step) {
+        const x1 = Math.min(x0 + step, e.x1), z1 = Math.min(z0 + step, e.z1);
+        const x = (x0 + x1) / 2, z = (z0 + z1) / 2, dA = (x1 - x0) * (z1 - z0);
+        const closed = zone ? Math.max(0, Math.min(x1, zone.x1) - Math.max(x0, zone.x0)) * Math.max(0, Math.min(z1, zone.z1) - Math.max(z0, zone.z0)) : 0;
         let best = null, bd = Infinity;
         for (const s of sup) { const d = rectDist(x, z, s); if (d < bd) { bd = d; best = s; } }
-        res.get(best).got += r.q * dA;
+        res.get(best).got += baseQ * dA + liveQ * (dA - closed);
         if (bd > maxD) { maxD = bd; mid = { x, z }; }
       }
       for (const p of r.points) {
@@ -474,7 +486,10 @@
         for (const s of sup) { const d = rectDist(p.x, p.z, s); if (d < bd) { bd = d; best = s; } }
         res.get(best).got += p.P;
       }
-      r.L = Math.max(1, 2 * maxD); r.M = r.q * r.L * r.L / 8; r.util = r.M / (M_CAP * (e.cap || 1)); r.mid = mid; r.sup = sup; r.maxD = Math.max(maxD, 0.5);
+      // Illustrative equivalent uniform load includes loads arriving from above.
+      // This does not resolve local moments, punching shear or plate behaviour.
+      r.qEquivalent = r.N / area;
+      r.L = Math.max(1, 2 * maxD); r.M = r.qEquivalent * r.L * r.L / 8; r.util = r.M / (M_CAP * (e.cap || 1)); r.mid = mid; r.sup = sup; r.maxD = Math.max(maxD, 0.5);
       const heavy = sup.slice().sort((a, b) => res.get(b).got - res.get(a).got)[0];
       r.over = heavy ? { x: heavy.cx, z: heavy.cz, name: heavy.name } : null;
     }
@@ -486,7 +501,7 @@
   // fixed sensors at the known critical points of each element
   const sensorGeo = new THREE.OctahedronGeometry(0.15);
   function buildSensors(list) {
-    STR.sensors.forEach(s => scene.remove(s.m)); STR.sensors = [];
+    clearSensors();
     const add = (e, x, y, z, factor, what) => {
       const r = STR.res.get(e);
       STR.sensors.push({ e, pos: new THREE.Vector3(x, y, z), score: (r.util || 0) * factor, what, m: null });
@@ -511,11 +526,17 @@
     placeSensors(STR.sensors);
   }
 
+  function clearSensors() {
+    STR.sensors.forEach(s => { if (s.m) { scene.remove(s.m); s.m.material.dispose(); } });
+    STR.sensors = [];
+  }
   function placeSensors(arr) {
-    STR.sensors.forEach(s => { if (s.m) scene.remove(s.m); });
-    STR.sensors = arr;
+    // The fixed-sensor builder passes the current array itself.
+    const next = arr.slice();
+    clearSensors();
+    STR.sensors = next;
     const ranked = STR.sensors.slice().sort((a, b) => b.score - a.score);
-    ranked.forEach((s, i) => { s.rank = i + 1; s.risk = i < 4; });
+    ranked.forEach((s, i) => { s.rank = i + 1; s.risk = STR.res.get(s.e).util >= 1; });
     STR.sensors.forEach(s => {
       s.m = new THREE.Mesh(sensorGeo, new THREE.MeshBasicMaterial({ color: s.risk ? 0xff2d55 : 0xff9500, depthTest: false, transparent: true }));
       s.m.position.copy(s.pos); s.m.renderOrder = 22; s.m.userData.sensor = s; scene.add(s.m);
@@ -540,6 +561,7 @@
       const r = STR.res.get(e);
       if (!formed(e) || r.util === undefined) { e.mesh.material = M.concrete; return; }
       if (!e.stressMat) e.stressMat = new THREE.MeshStandardMaterial({ roughness: 0.8 });
+      applyXray(e.stressMat, NET.xray);
       e.stressMat.color.copy(stressColor(r.util));
       e.mesh.material = e.stressMat;
     });
@@ -549,18 +571,19 @@
 
   function renderRiskList(top) {
     const box = document.getElementById("risk-list"); if (!box) return;
-    box.innerHTML = top.length ? top.map(s => `<li><b>${s.rank}</b>${s.e.name} · ${s.what} · ${Math.round(s.score * 100)} % of capacity</li>`).join("") : "<li>No formed elements yet.</li>";
+    box.innerHTML = top.length ? top.map(s => `<li class="${s.risk ? "over-capacity" : ""}"><b>${s.rank}</b>${s.e.name} · ${s.what} · element utilisation ${Math.round(STR.res.get(s.e).util * 100)} % · heuristic search score ${s.score.toFixed(2)}</li>`).join("") : "<li>No formed elements yet.</li>";
   }
 
   function structuralReading(e) {
     if (!STR.on) return "";
     const r = STR.res.get(e); if (!r || r.util === undefined || !formed(e)) return "";
     const pct = v => Math.round(v * 100) + " %";
+    const capacityFactor = e.cap === undefined ? 1 : e.cap;
     let txt;
-    if (!e.slab) txt = `Axial force ${Math.round(r.N)} kN · section ${r.A.toFixed(2)} m² · stress ${(r.sigma / 1000).toFixed(2)} MPa<br>Utilisation ${pct(r.util)} of assumed 12 MPa`;
-    else if (e.y0 < 0.01) txt = `Total load ${Math.round(r.N)} kN · soil pressure ${Math.round(r.p)} kPa<br>Utilisation ${pct(r.util)} of assumed 150 kPa`;
-    else txt = `q ${r.q.toFixed(1)} kN/m² · effective span ${r.L.toFixed(1)} m · M ${Math.round(r.M)} kNm/m<br>Utilisation ${pct(r.util)} of assumed 120 kNm/m`;
-    const sens = STR.sensors.filter(s => s.e === e).map(s => `${s.risk ? "⚠ risk point #" + s.rank : "sensor #" + s.rank}: ${s.what}`).join("<br>");
+    if (!e.slab) txt = `Axial force ${Math.round(r.N)} kN · section ${r.A.toFixed(2)} m² · stress ${(r.sigma / 1000).toFixed(2)} MPa<br>Utilisation ${pct(r.util)} of current assumed ${(12 * capacityFactor).toFixed(2)} MPa`;
+    else if (e.y0 < 0.01) txt = `Total load ${Math.round(r.N)} kN · soil pressure ${Math.round(r.p)} kPa<br>Utilisation ${pct(r.util)} of current assumed ${(150 * capacityFactor).toFixed(0)} kPa`;
+    else txt = `Equivalent q ${(r.qEquivalent || r.q).toFixed(1)} kN/m² (includes loads from above) · effective span ${r.L.toFixed(1)} m · M ${Math.round(r.M)} kNm/m<br>Utilisation ${pct(r.util)} of current assumed ${(120 * capacityFactor).toFixed(1)} kNm/m · uniform-load approximation; local bending and punching shear not resolved`;
+    const sens = STR.sensors.filter(s => s.e === e).map(s => `${s.risk ? "⚠ element at/over assumed capacity · sensor #" + s.rank : "sensor #" + s.rank}: ${s.what}`).join("<br>");
     return `<dt>Structural reading (simplified)</dt><dd>${txt}<br>Relative to the most loaded element: ${pct(r.util / STR.maxU)}</dd>` + (sens ? `<dt>Integrity sensors</dt><dd>${sens}</dd>` : "");
   }
 
@@ -632,7 +655,13 @@
 
   const MOB = { running: false, crawlers: [], t: 0, steps: 0 };
   const crawlGeo = new THREE.SphereGeometry(0.11, 12, 8);
-  function clearCrawlers() { MOB.crawlers.forEach(c => { scene.remove(c.m); scene.remove(c.trail); }); MOB.crawlers = []; MOB.running = false; }
+  function clearCrawlers() {
+    MOB.crawlers.forEach(c => {
+      scene.remove(c.m); scene.remove(c.trail);
+      c.m.material.dispose(); c.trail.geometry.dispose(); c.trail.material.dispose();
+    });
+    MOB.crawlers = []; MOB.running = false;
+  }
 
   function deployMobile() {
     if (!STR.on) return;
@@ -649,11 +678,15 @@
         const res = climb(e, start, rand);
         const m = new THREE.Mesh(crawlGeo, new THREE.MeshBasicMaterial({ color: 0x00e5ff, depthTest: false, transparent: true }));
         m.renderOrder = 23; scene.add(m);
-        const trail = new THREE.Line(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: 0x00b8e6, transparent: true, opacity: 0.8, depthTest: false }));
+        const trailGeometry = new THREE.BufferGeometry();
+        trailGeometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array((res.path.length + 1) * 3), 3));
+        trailGeometry.setDrawRange(0, 0);
+        const trail = new THREE.Line(trailGeometry, new THREE.LineBasicMaterial({ color: 0x00b8e6, transparent: true, opacity: 0.8, depthTest: false }));
         trail.renderOrder = 22; scene.add(trail);
         MOB.crawlers.push({ e, path: res.path.map(q => new THREE.Vector3(q.x, q.y, q.z)), value: res.value, end: res.end, m, trail });
       }
     }
+    if (!MOB.crawlers.length) { setSensorStatus("No formed elements to search."); return; }
     MOB.t = 0; MOB.steps = Math.max(...MOB.crawlers.map(c => c.path.length));
     MOB.running = true;
     setSensorStatus(`Searching… ${MOB.crawlers.length} mobile sensors climb towards the highest local stress.`);
@@ -669,6 +702,7 @@
       found.push({ e: c.e, pos: c.path[c.path.length - 1].clone(), score: c.value, what: describe(c.e, c.end), m: null, mobile: true });
     }
     placeSensors(found);
+    chipCard(NET.selected);
     setSensorStatus(`Done: ${MOB.crawlers.length} mobile sensors settled at ${found.length} hotspots (${MOB.steps} search steps). Trails show the route each sensor took.`);
   }
 
@@ -679,11 +713,16 @@
     for (const c of MOB.crawlers) {
       const vis = STR.on;
       c.m.visible = vis && MOB.running; c.trail.visible = vis;
+      if (!MOB.running) continue;
       const i = Math.min(Math.floor(k), c.path.length - 1), f = Math.min(1, k - i);
       const j = Math.min(i + 1, c.path.length - 1);
       c.m.position.lerpVectors(c.path[i], c.path[j], i === j ? 0 : f);
-      const pts = c.path.slice(0, i + 1).concat([c.m.position.clone()]);
-      c.trail.geometry.dispose(); c.trail.geometry = new THREE.BufferGeometry().setFromPoints(pts);
+      const positions = c.trail.geometry.attributes.position;
+      for (let n = 0; n <= i; n++) positions.setXYZ(n, c.path[n].x, c.path[n].y, c.path[n].z);
+      positions.setXYZ(i + 1, c.m.position.x, c.m.position.y, c.m.position.z);
+      positions.needsUpdate = true;
+      c.trail.geometry.setDrawRange(0, i + 2);
+      c.trail.geometry.computeBoundingSphere();
       const v = localStress(c.e, c.m.position);
       c.m.material.color.copy(stressColor(v));
     }
@@ -705,6 +744,15 @@
   const el = n => elements.find(e => e.name === n);
 
   function addObj(o) { scene.add(o); DMG.objs.push(o); return o; }
+  function removeDamageObjects(predicate = () => true) {
+    const removed = DMG.objs.filter(predicate), kept = DMG.objs.filter(o => !removed.includes(o));
+    const geometries = new Set(), materials = new Set();
+    removed.forEach(o => { scene.remove(o); if (o.geometry) geometries.add(o.geometry); if (o.material) materials.add(o.material); });
+    kept.forEach(o => { geometries.delete(o.geometry); materials.delete(o.material); });
+    geometries.delete(pulseGeo); materials.delete(redMat); materials.delete(propMat);
+    geometries.forEach(g => g.dispose()); materials.forEach(m => m.dispose());
+    DMG.objs = kept; DMG.pulses = DMG.pulses.filter(p => !removed.includes(p.m));
+  }
   function snapshot() { const m = new Map(); elements.forEach(e => { const r = STR.res.get(e); if (r && r.util !== undefined && formed(e)) m.set(e.name, r.util); }); return m; }
   function recompute() { STR.sig = ""; clearCrawlers(); update(T, false); }
 
@@ -782,10 +830,10 @@
     // 2) restricted zone on the slab above (or on the leaking slab itself): use load set to zero there
     const zoneSlab = s.kind === "leak" ? e : slabAbove;
     if (zoneSlab) {
-      zoneSlab.liveF = 0;
       const zx = s.kind === "leak" ? 1.2 : e.cx, zz = s.kind === "leak" ? -2.2 : e.cz;
       const zone = new THREE.Mesh(new THREE.BoxGeometry(3.2, 0.06, 3.2), new THREE.MeshBasicMaterial({ color: 0xff2d55, transparent: true, opacity: 0.28, depthWrite: false }));
       zone.position.set(Math.max(zoneSlab.x0 + 1.6, Math.min(zoneSlab.x1 - 1.6, zx)), zoneSlab.y1 + 0.05, Math.max(zoneSlab.z0 + 1.6, Math.min(zoneSlab.z1 - 1.6, zz))); addObj(zone);
+      zoneSlab.liveZone = { x0: zone.position.x - 1.6, x1: zone.position.x + 1.6, z0: zone.position.z - 1.6, z1: zone.position.z + 1.6 };
       const edges = new THREE.LineSegments(new THREE.EdgesGeometry(zone.geometry), new THREE.LineBasicMaterial({ color: 0xff2d55 })); edges.position.copy(zone.position); addObj(edges);
       logStep(`<b>Load plan</b>: zone on ${zoneSlab.name} closed, use load set to 0 there.`);
     }
@@ -834,8 +882,8 @@
   }
 
   function resetDamage(silent) {
-    DMG.objs.forEach(o => scene.remove(o)); DMG.objs = []; DMG.pulses = []; DMG.focus = null;
-    elements.forEach(e => { delete e.failed; delete e.cap; delete e.liveF; e.mesh.visible = e.pf > 0; });
+    removeDamageObjects(); DMG.focus = null;
+    elements.forEach(e => { delete e.failed; delete e.cap; delete e.liveF; delete e.liveZone; e.mesh.visible = e.pf > 0; });
     if (DMG.e) { DMG.e.chip.mesh.material = chipMat; DMG.e.chip.mesh.scale.setScalar(1); }
     elements.forEach(e => { delete e.rebuild; delete e.rebuilding; });
     STR.props = []; DMG.robotGoal = null; DMG.key = null; DMG.phase = -1; DMG.e = null; DMG.done = false; DMG.rec = null; DMG.finished = false; DMG.snap = {}; DMG.log = [];
@@ -909,8 +957,7 @@
     const goal = DMG.robotGoal && DMG.robotGoal[R.ci];
     if (R.phase === 0 && R.t > 2.5) {
       R.phase = 1; R.t = 0;
-      DMG.objs.filter(o => o.userData.stub || o.userData.debris).forEach(o => { scene.remove(o); });
-      DMG.objs.filter(o => o.userData.flicker).forEach(o => { scene.remove(o); });
+      removeDamageObjects(o => o.userData.stub || o.userData.debris || o.userData.flicker);
       if (s.kind === "fail") { e.failed = false; e.rebuilding = true; e.rebuild = 0.3; }
       else e.rebuilding = true;
       logStep(s.kind === "fail" ? `<b>Re-formation</b>: debris cleared; ${e.name} is formed again layer by layer from the remaining stub, around a new cage.`
@@ -935,9 +982,9 @@
       DMG.objs.forEach(o => { if (o.userData.grow) o.scale.y = Math.max(0.001, o.scale.y - dt * 0.8); });
       if (R.t > 1.6) {
         R.phase = 3; R.t = 0;
-        DMG.objs.forEach(o => scene.remove(o)); DMG.objs = DMG.objs.filter(o => o.userData.keep);
+        removeDamageObjects(o => !o.userData.keep);
         STR.props = [];
-        elements.forEach(x => { delete x.cap; delete x.liveF; });
+        elements.forEach(x => { delete x.cap; delete x.liveF; delete x.liveZone; });
         DMG.robotGoal = null; recompute(); DMG.snap.rep = snapshot();
         logStep("<b>Load plan restored</b>: temporary prop removed, zone reopened, neighbours relax to their normal state.");
         logStep(`<b>Experience → Cloud DNA</b>: ${LESSON[DMG.key]}`);
@@ -1231,6 +1278,7 @@
     updateNetworks(T);
     updateStress();
     updateProjectClip();
+    chipCard(NET.selected);
   }
 
   // ---------------- camera orbit (drag / wheel / right-drag pan) ----------------
